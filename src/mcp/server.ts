@@ -6,7 +6,7 @@ import { counts, fillCart, summarize, type FillResult, type Outcome, type Tally 
 import { loadConfig, loadDotEnv, type ShoppingConfig } from '../config.js';
 import { MAX_QUANTITY, parseList, type ListItem } from '../list/parse-list.js';
 import { ShufersalClient } from '../shufersal/client.js';
-import { connect, hasCredentials, login } from '../shufersal/connect.js';
+import { connect, hasCredentials, login, passwordLogin } from '../shufersal/connect.js';
 import { NotSignedInError, SessionError, type Transport } from '../shufersal/transport.js';
 import { normalizeStart, skuOf, type SourceItem } from '../shufersal/types.js';
 import { Choices } from '../list/choices.js';
@@ -76,6 +76,19 @@ class Shop {
   signIn(): Promise<void> {
     const next = this.queue.then(async () => {
       this.session = await login(this.config, this.log);
+    });
+    this.queue = next.catch(() => {});
+    return next;
+  }
+
+  /**
+   * Logs in with credentials given for this one call, not the configured ones:
+   * a host that manages several accounts passes them in, and they are not kept.
+   * The new session's cookies are saved to the cookie file as usual.
+   */
+  signInWith(username: string, password: string): Promise<void> {
+    const next = this.queue.then(async () => {
+      this.session = await passwordLogin({ ...this.config, username, password }, this.log);
     });
     this.queue = next.catch(() => {});
     return next;
@@ -221,6 +234,29 @@ export function createServer(shop: Shop): McpServer {
   );
 
   const credentials = hasCredentials(config);
+
+  // Opt-in, for a host that collects the password itself (for example on its
+  // own account page) and must never show this tool to a model. Standalone
+  // setups do not have it.
+  if (process.env['SHUFERSAL_PASSWORD_TOOL'] === '1') {
+    server.registerTool(
+      'login_with_password',
+      {
+        title: 'Log in with a username and password',
+        description:
+          'For the host application only, never for a model: logs in with the given credentials and saves the session cookies. ' +
+          'The credentials are used for this login and not stored.',
+        inputSchema: { username: z.string().min(1).max(200), password: z.string().min(1).max(200) },
+        annotations: { openWorldHint: true },
+      },
+      ({ username, password }) =>
+        respond(async () => {
+          await shop.signInWith(username, password);
+          return { signedIn: true };
+        }),
+    );
+  }
+
   server.registerTool(
     'login',
     {

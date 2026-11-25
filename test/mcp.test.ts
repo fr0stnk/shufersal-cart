@@ -58,4 +58,31 @@ describe('MCP server', () => {
     const tooMany = await client.callTool({ name: 'add_to_cart', arguments: { items: [{ code: 'P_1', quantity: 500 }] } });
     expect(tooMany.isError).toBe(true);
   });
+
+  it('offers login_with_password only when the host enables it, and passes the credentials through once', async () => {
+    expect((await (await connected()).listTools()).tools.map((t) => t.name)).not.toContain('login_with_password');
+
+    process.env['SHUFERSAL_PASSWORD_TOOL'] = '1';
+    try {
+      const shop = new Shop(config, () => {});
+      const seen: string[][] = [];
+      shop.signInWith = async (username: string, password: string) => {
+        seen.push([username, password]);
+        if (password === 'wrong') throw new Error('Shufersal rejected the login');
+      };
+      const server = createServer(shop);
+      const [a, b] = InMemoryTransport.createLinkedPair();
+      const client = new Client({ name: 'test', version: '0' });
+      await Promise.all([server.connect(a), client.connect(b)]);
+      expect((await client.listTools()).tools.map((t) => t.name)).toContain('login_with_password');
+      expect(JSON.parse(text(await client.callTool({ name: 'login_with_password', arguments: { username: 'u@example.com', password: 'secret' } })))).toEqual({ signedIn: true });
+      const refused = await client.callTool({ name: 'login_with_password', arguments: { username: 'u@example.com', password: 'wrong' } });
+      expect(refused.isError).toBe(true);
+      expect(text(refused)).not.toContain('wrong');
+      expect(seen).toEqual([['u@example.com', 'secret'], ['u@example.com', 'wrong']]);
+    } finally {
+      delete process.env['SHUFERSAL_PASSWORD_TOOL'];
+    }
+  });
 });
+
