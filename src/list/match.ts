@@ -43,6 +43,25 @@ export function score(query: string, candidate: Candidate): number {
   return hits / wanted.length;
 }
 
+// Words that make a product a variant of what the line names. A product carrying
+// one the line does not is never picked by itself: "ביצים 12 L" must not become
+// Omega-3 eggs because they happen to be the only full match.
+const VARIANT_WORDS = new Set([
+  'אומגה', 'אורגני', 'אורגנית', 'אורגניים', 'מלא', 'מלאה', 'דיאט', 'זירו', 'לייט', 'קפוא', 'קפואה', 'קפואים', 'קפואות',
+  'מוקפא', 'מוקפאת', 'מוקפאים', 'מוקפאות', 'בטעם', 'חופש', 'מעושן', 'מעושנת',
+]);
+
+function unrequestedVariant(query: string, candidate: Candidate): boolean {
+  const asked = new Set(tokens(query));
+  return tokens(candidate.name).some((w) => VARIANT_WORDS.has(w) && !asked.has(w));
+}
+
+/** Whether a candidate names the line's first word among its own first two words ("שריר עגל בננה" does not for "בננה"). */
+function namesFirstWord(query: string, candidate: Candidate): boolean {
+  const first = tokens(query).find((t) => /\p{L}/u.test(t));
+  return !first || tokens(candidate.name).slice(0, 2).some((w) => w.startsWith(first) || first.startsWith(w));
+}
+
 export function decide(query: string, results: Candidate[]): MatchDecision {
   const scored = results
     .map((candidate, rank) => ({ candidate, rank, score: score(query, candidate) }))
@@ -50,13 +69,17 @@ export function decide(query: string, results: Candidate[]): MatchDecision {
     .sort((a, b) => b.score - a.score || a.rank - b.rank);
 
   if (scored.length === 0) return { kind: 'none' };
+  // A code-like word ("xyz123") that no result contains means the line names something this store does not sell.
+  const codes = tokens(query).filter((t) => /\p{L}/u.test(t) && /\d/.test(t));
+  const everything = results.map((r) => tokens([r.name, r.brand ?? '', r.unitDescription ?? ''].join(' '))).flat();
+  if (codes.some((code) => !everything.some((h) => h.startsWith(code)))) return { kind: 'none' };
 
   const inStock = scored.filter((s) => s.candidate.inStock);
   if (inStock.length === 0) {
     return { kind: 'out-of-stock', candidates: scored.slice(0, MAX_CANDIDATES_SHOWN).map((s) => s.candidate) };
   }
 
-  const full = inStock.filter((s) => s.score === 1);
+  const full = inStock.filter((s) => s.score === 1 && !unrequestedVariant(query, s.candidate));
   const exactName = full.filter((s) => normalize(s.candidate.name) === normalize(query));
 
   // Exactly one product fully matches, or exactly one is named exactly what
@@ -64,5 +87,6 @@ export function decide(query: string, results: Candidate[]): MatchDecision {
   if (full.length === 1) return { kind: 'confident', pick: full[0]!.candidate };
   if (exactName.length === 1) return { kind: 'confident', pick: exactName[0]!.candidate };
 
-  return { kind: 'ambiguous', candidates: inStock.slice(0, MAX_CANDIDATES_SHOWN).map((s) => s.candidate) };
+  const named = inStock.filter((s) => namesFirstWord(query, s.candidate));
+  return { kind: 'ambiguous', candidates: (named.length ? named : inStock).slice(0, MAX_CANDIDATES_SHOWN).map((s) => s.candidate) };
 }

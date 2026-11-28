@@ -19,6 +19,22 @@ describe('normalize / score', () => {
 });
 
 describe('decide', () => {
+  it('never picks a variant the line does not name, and asks instead (GROC-036)', () => {
+    const d = decide('ביצים 12 L', [
+      c('P_1201855', 'ביצים אומגה 3 L', { unitDescription: '12 יחידות' }),
+      c('P_1201589', 'ביצי משק טריות L', { unitDescription: '12 יחידות' }),
+    ]);
+    expect(d.kind).toBe('ambiguous');
+    expect(decide('ביצים אומגה 12', [c('P_1', 'ביצים אומגה 3 L', { unitDescription: '12 יחידות' })]).kind).toBe('confident');
+  });
+
+  it('offers only candidates that name the line, and a code-like word nobody sells is not found (GROC-036)', () => {
+    const d = decide('בננה 1.5', [c('P_1', 'בננה'), c('P_2', 'אשכול בננה'), c('P_3', 'שריר עגל בננה קפוא')]);
+    expect(d.kind).toBe('ambiguous');
+    expect(d.kind === 'ambiguous' && d.candidates.map((x) => x.code)).toEqual(['P_1', 'P_2']);
+    expect(decide('שוקולד xyz123', [c('P_1', 'שוקולד חלב'), c('P_2', 'שוקולד מריר')]).kind).toBe('none');
+  });
+
   it('picks the only product that matches every word', () => {
     const d = decide('במבה נוגט', [c('P_1', 'במבה'), c('P_2', 'במבה במילוי נוגט'), c('P_3', 'ביסלי')]);
     expect(d).toEqual({ kind: 'confident', pick: expect.objectContaining({ code: 'P_2' }) });
